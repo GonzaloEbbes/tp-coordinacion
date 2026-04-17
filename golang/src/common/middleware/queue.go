@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	middleware "github.com/7574-sistemas-distribuidos/tp-mom/golang/internal/middleware"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -26,14 +25,14 @@ func NewQueueMiddleware(hostname string, port int, queueName string) (*QueueMidd
 
 	conn, err := amqp.Dial(fmt.Sprintf("amqp://guest:guest@%s:%d/", hostname, port))
 	if err != nil {
-		return nil, middleware.ErrMessageMiddlewareDisconnected
+		return nil, ErrMessageMiddlewareDisconnected
 	}
 	middlewareQueue.conn = conn
 
 	ch, err := conn.Channel()
 	if err != nil {
 		_ = middlewareQueue.Close()
-		return nil, middleware.ErrMessageMiddlewareMessage
+		return nil, ErrMessageMiddlewareMessage
 	}
 	middlewareQueue.ch = ch
 
@@ -47,14 +46,14 @@ func NewQueueMiddleware(hostname string, port int, queueName string) (*QueueMidd
 	)
 	if err != nil {
 		_ = middlewareQueue.Close()
-		return nil, middleware.ErrMessageMiddlewareMessage
+		return nil, ErrMessageMiddlewareMessage
 	}
 	middlewareQueue.rabbitQueue = queue
 
 	return middlewareQueue, nil
 }
 
-func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg middleware.Message, ack func(), nack func())) (err error) {
+func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) (err error) {
 	m.consumerTag = fmt.Sprintf("queue-%s-%d", m.rabbitQueue.Name, time.Now().UnixNano())
 	// We could use something as uuid but this would require an additional dependency that would modify the go.mod file
 	// to avoid possible conflicts from discarding the go.mod changes, we just use timestamps
@@ -69,7 +68,7 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg middleware.Messag
 		nil,   // args
 	)
 	if err != nil {
-		return middleware.ErrMessageMiddlewareMessage
+		return ErrMessageMiddlewareMessage
 	}
 
 	m.shouldStopLock.Lock()
@@ -83,7 +82,7 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg middleware.Messag
 		nack := func() {
 			_ = msg.Nack(false, false)
 		}
-		callbackFunc(middleware.Message{Body: string(msg.Body)}, ack, nack)
+		callbackFunc(Message{Body: string(msg.Body)}, ack, nack)
 
 		var shouldStop bool
 		m.shouldStopLock.Lock()
@@ -97,7 +96,7 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg middleware.Messag
 	return nil
 }
 
-func (m *QueueMiddleware) StopConsuming() {
+func (m *QueueMiddleware) StopConsuming() error {
 	m.shouldStopLock.Lock()
 	m.shouldStop = true
 	m.shouldStopLock.Unlock()
@@ -105,11 +104,13 @@ func (m *QueueMiddleware) StopConsuming() {
 	if m.ch != nil && m.consumerTag != "" {
 		_ = m.ch.Cancel(m.consumerTag, false)
 	}
+
+	return nil
 }
 
-func (m *QueueMiddleware) Send(msg middleware.Message) (err error) {
+func (m *QueueMiddleware) Send(msg Message) (err error) {
 	if m.ch == nil || m.conn == nil {
-		return middleware.ErrMessageMiddlewareDisconnected
+		return ErrMessageMiddlewareDisconnected
 	}
 
 	err = m.ch.Publish(
@@ -123,9 +124,9 @@ func (m *QueueMiddleware) Send(msg middleware.Message) (err error) {
 		})
 	if err != nil {
 		if errors.Is(err, amqp.ErrClosed) {
-			return middleware.ErrMessageMiddlewareDisconnected
+			return ErrMessageMiddlewareDisconnected
 		}
-		return middleware.ErrMessageMiddlewareMessage
+		return ErrMessageMiddlewareMessage
 	}
 
 	return nil
@@ -139,14 +140,14 @@ func (m *QueueMiddleware) Close() error {
 
 	if m.ch != nil {
 		if err := m.ch.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {
-			closeErr = middleware.ErrMessageMiddlewareClose
+			closeErr = ErrMessageMiddlewareClose
 		}
 		m.ch = nil
 	}
 	if m.conn != nil {
 		if err := m.conn.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {
 			if closeErr == nil {
-				closeErr = middleware.ErrMessageMiddlewareClose
+				closeErr = ErrMessageMiddlewareClose
 			}
 		}
 		m.conn = nil
