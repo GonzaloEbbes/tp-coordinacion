@@ -67,13 +67,13 @@ func (sum *Sum) Run() {
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	defer ack()
 
-	fruitRecords, isEof, err := inner.DeserializeMessage(&msg)
+	envelope, err := inner.DeserializeMessage(&msg)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
 		return
 	}
 
-	if isEof {
+	if envelope.Type == inner.TypeEOF {
 		if err := sum.handleEndOfRecordMessage(); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
@@ -83,7 +83,7 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		return
 	}
 
-	if err := sum.handleDataMessage(fruitRecords); err != nil {
+	if err := sum.handleDataMessage(envelope.Payload); err != nil {
 		slog.Error("While handling data message", "err", err)
 		return
 	}
@@ -96,7 +96,7 @@ func (sum *Sum) handleEndOfRecordMessage() error {
 	slog.Info("Received End Of Records message")
 	for key := range sum.fruitItemMap {
 		fruitRecord := []fruititem.FruitItem{sum.fruitItemMap[key]}
-		message, err := inner.SerializeMessage(fruitRecord)
+		message, err := inner.SerializeMessage(inner.TypeData, fruitRecord, "")
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
 			return err
@@ -107,8 +107,7 @@ func (sum *Sum) handleEndOfRecordMessage() error {
 		}
 	}
 
-	eofMessage := []fruititem.FruitItem{}
-	message, err := inner.SerializeMessage(eofMessage)
+	message, err := inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, "")
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err

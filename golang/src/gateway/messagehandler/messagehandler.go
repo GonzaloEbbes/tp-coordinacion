@@ -15,18 +15,23 @@ func NewMessageHandler() MessageHandler {
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
 	data := []fruititem.FruitItem{fruitRecord}
-	return inner.SerializeMessage(data)
+	return inner.SerializeMessage(inner.TypeData, data, "")
 }
 
 func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
-	data := []fruititem.FruitItem{}
-	return inner.SerializeMessage(data)
+	return inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, "")
 }
 
+// TODO: el caso de que el type sea EOF no es muy correcto devolver nil y nil en error,
+// mas adelante buscar una mejor forma de manejar esto. Probablemente asegurando que el Join
+// no envie mensajes EOF al GW, y que aca se. puedan tratar como error
 func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {
-	fruitRecords, _, err := inner.DeserializeMessage(message)
+	envelope, err := inner.DeserializeMessage(message)
 	if err != nil {
 		return nil, err
 	}
-	return fruitRecords, nil
+	if envelope.Type == inner.TypeEOF {
+		return nil, nil
+	}
+	return envelope.Payload, nil
 }
