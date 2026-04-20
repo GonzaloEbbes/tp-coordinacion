@@ -3,11 +3,17 @@ package sum
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"sort"
+	"strings"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
+
+// TODO: eliminar esto
+const totalsLogFile = "sum_totals.log"
 
 type SumConfig struct {
 	Id                int
@@ -71,11 +77,18 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		if err := sum.handleEndOfRecordMessage(); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
+		if err := sum.logTotalsSnapshot("after eof"); err != nil {
+			slog.Error("While logging totals snapshot", "err", err)
+		}
 		return
 	}
 
 	if err := sum.handleDataMessage(fruitRecords); err != nil {
 		slog.Error("While handling data message", "err", err)
+		return
+	}
+	if err := sum.logTotalsSnapshot("after data message"); err != nil {
+		slog.Error("While logging totals snapshot", "err", err)
 	}
 }
 
@@ -117,4 +130,31 @@ func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem) error {
 		}
 	}
 	return nil
+}
+
+// TODO: eliminar esto, es solo para probar que los containers de sum esten
+// realmente haciendo cosas
+func (sum *Sum) logTotalsSnapshot(stage string) error {
+	file, err := os.OpenFile(totalsLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	keys := make([]string, 0, len(sum.fruitItemMap))
+	for fruit := range sum.fruitItemMap {
+		keys = append(keys, fruit)
+	}
+	sort.Strings(keys)
+
+	var builder strings.Builder
+	builder.WriteString(stage)
+	builder.WriteString("\n")
+	for _, fruit := range keys {
+		builder.WriteString(fmt.Sprintf("%s,%d\n", fruit, sum.fruitItemMap[fruit].Amount))
+	}
+	builder.WriteString("\n")
+
+	_, err = file.WriteString(builder.String())
+	return err
 }
