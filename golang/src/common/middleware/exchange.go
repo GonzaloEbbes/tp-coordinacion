@@ -53,38 +53,38 @@ func NewExchangeMiddleware(hostname string, port int, exchangeName string, routi
 	middlewareExchange.exchangeName = exchangeName
 	middlewareExchange.routingKeys = append([]string(nil), routingKeys...)
 
-	queue, err := ch.QueueDeclare(
-		"",
-		false,
-		true,
-		true,
-		false,
-		nil,
-	)
-	if err != nil {
-		_ = middlewareExchange.Close()
-		return nil, ErrMessageMiddlewareMessage
-	}
-	middlewareExchange.rabbitQueue = queue
-
-	for _, key := range routingKeys {
-		err = ch.QueueBind(
-			queue.Name,
-			key,
-			exchangeName,
-			false,
-			nil,
-		)
-		if err != nil {
-			_ = middlewareExchange.Close()
-			return nil, ErrMessageMiddlewareMessage
-		}
-	}
-
 	return middlewareExchange, nil
 }
 
 func (m *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack func(), nack func())) (err error) {
+	if m.rabbitQueue.Name == "" {
+		queue, err := m.ch.QueueDeclare(
+			"",
+			false,
+			true,
+			true,
+			false,
+			nil,
+		)
+		if err != nil {
+			return ErrMessageMiddlewareMessage
+		}
+		m.rabbitQueue = queue
+
+		for _, key := range m.routingKeys {
+			err = m.ch.QueueBind(
+				queue.Name,
+				key,
+				m.exchangeName,
+				false,
+				nil,
+			)
+			if err != nil {
+				return ErrMessageMiddlewareMessage
+			}
+		}
+	}
+
 	m.consumerTag = fmt.Sprintf("exchange-%s-%d", m.rabbitQueue.Name, time.Now().UnixNano())
 
 	msgs, err := m.ch.Consume(
@@ -133,6 +133,8 @@ func (m *ExchangeMiddleware) StopConsuming() error {
 	if m.ch != nil && m.consumerTag != "" {
 		_ = m.ch.Cancel(m.consumerTag, false)
 	}
+	m.consumerTag = ""
+	m.rabbitQueue = amqp.Queue{}
 
 	return nil
 }

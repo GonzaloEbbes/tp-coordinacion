@@ -27,9 +27,12 @@ type SumConfig struct {
 }
 
 type Sum struct {
-	inputQueue     middleware.Middleware
-	outputExchange middleware.Middleware
-	fruitItemMap   map[string]fruititem.FruitItem
+	inputQueue       middleware.Middleware
+	controlConsumer  middleware.Middleware
+	controlPublisher middleware.Middleware
+	outputExchange   middleware.Middleware
+	requestStates    map[string]map[string]fruititem.FruitItem
+	pendingEOFs      map[string]uint64
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -37,6 +40,32 @@ func NewSum(config SumConfig) (*Sum, error) {
 
 	inputQueue, err := middleware.CreateQueueMiddleware(config.InputQueue, connSettings)
 	if err != nil {
+		return nil, err
+	}
+
+	controlConsumer, err := middleware.CreateExchangeMiddleware(
+		fmt.Sprintf("%s_control", config.SumPrefix),
+		[]string{fmt.Sprintf("%s_%d", config.SumPrefix, config.Id)},
+		connSettings,
+	)
+	if err != nil {
+		inputQueue.Close()
+		return nil, err
+	}
+
+	controlRoutingKeys := make([]string, config.SumAmount)
+	for i := range config.SumAmount {
+		controlRoutingKeys[i] = fmt.Sprintf("%s_%d", config.SumPrefix, i)
+	}
+
+	controlPublisher, err := middleware.CreateExchangeMiddleware(
+		fmt.Sprintf("%s_control", config.SumPrefix),
+		controlRoutingKeys,
+		connSettings,
+	)
+	if err != nil {
+		inputQueue.Close()
+		controlConsumer.Close()
 		return nil, err
 	}
 
@@ -48,20 +77,31 @@ func NewSum(config SumConfig) (*Sum, error) {
 	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
 	if err != nil {
 		inputQueue.Close()
+		controlConsumer.Close()
+		controlPublisher.Close()
 		return nil, err
 	}
 
 	return &Sum{
-		inputQueue:     inputQueue,
-		outputExchange: outputExchange,
-		fruitItemMap:   map[string]fruititem.FruitItem{},
+		inputQueue:       inputQueue,
+		controlConsumer:  controlConsumer,
+		controlPublisher: controlPublisher,
+		outputExchange:   outputExchange,
+		requestStates:    map[string]map[string]fruititem.FruitItem{},
+		pendingEOFs:      map[string]uint64{},
 	}, nil
 }
 
+// TODO: validar si no es necesario que se espere o joinee esta go routine, como minimo al salir
 func (sum *Sum) Run() {
+	go sum.controlConsumer.StartConsuming(func(msg middleware.Message, ack, nack func()) {
+		sum.handleMessage(msg, ack, nack)
+	})
+
 	sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessage(msg, ack, nack)
 	})
+
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
@@ -74,16 +114,25 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	}
 
 	if envelope.Type == inner.TypeEOF {
-		if err := sum.handleEndOfRecordMessage(); err != nil {
-			slog.Error("While handling end of record message", "err", err)
-		}
-		if err := sum.logTotalsSnapshot("after eof"); err != nil {
-			slog.Error("While logging totals snapshot", "err", err)
+		if err := sum.broadcastEOF(envelope.RequestID, envelope.Sequence); err != nil {
+			slog.Error("While broadcasting eof", "err", err)
 		}
 		return
 	}
 
-	if err := sum.handleDataMessage(envelope.Payload); err != nil {
+	if envelope.Type == inner.TypeSumEOF {
+		sum.registerPendingEOF(envelope.RequestID, envelope.Sequence)
+		return
+	}
+
+	if err := sum.processPendingEOFsBefore(envelope.Sequence); err != nil {
+		slog.Error("While processing pending eof messages", "err", err)
+		return
+	}
+
+	// TODO: antes de cerrar definitivamente un request por EOF pendiente, hay que
+	// incorporar el control fino de mensajes nacked/reintentados asociados a ese request.
+	if err := sum.handleDataMessage(envelope.RequestID, envelope.Payload); err != nil {
 		slog.Error("While handling data message", "err", err)
 		return
 	}
@@ -92,11 +141,44 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	}
 }
 
-func (sum *Sum) handleEndOfRecordMessage() error {
-	slog.Info("Received End Of Records message")
-	for key := range sum.fruitItemMap {
-		fruitRecord := []fruititem.FruitItem{sum.fruitItemMap[key]}
-		message, err := inner.SerializeMessage(inner.TypeData, fruitRecord, "")
+func (sum *Sum) broadcastEOF(requestID string, sequence uint64) error {
+	message, err := inner.SerializeMessage(inner.TypeSumEOF, []fruititem.FruitItem{}, requestID, sequence)
+	if err != nil {
+		return err
+	}
+	return sum.controlPublisher.Send(*message)
+}
+
+func (sum *Sum) registerPendingEOF(requestID string, sequence uint64) {
+	if current, ok := sum.pendingEOFs[requestID]; ok && current >= sequence {
+		return
+	}
+	sum.pendingEOFs[requestID] = sequence
+}
+
+func (sum *Sum) processPendingEOFsBefore(currentSequence uint64) error {
+	for requestID, eofSequence := range sum.pendingEOFs {
+		if eofSequence < currentSequence {
+			if err := sum.handleEndOfRecordMessage(requestID, eofSequence); err != nil {
+				return err
+			}
+			delete(sum.pendingEOFs, requestID)
+		}
+	}
+	return nil
+}
+
+func (sum *Sum) handleEndOfRecordMessage(requestID string, eofSequence uint64) error {
+	slog.Info("Received End Of Records message", "request_id", requestID, "sequence", eofSequence)
+
+	fruitItemMap, ok := sum.requestStates[requestID]
+	if !ok {
+		return nil
+	}
+
+	for key := range fruitItemMap {
+		fruitRecord := []fruititem.FruitItem{fruitItemMap[key]}
+		message, err := inner.SerializeMessage(inner.TypeData, fruitRecord, requestID, 0)
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
 			return err
@@ -107,7 +189,7 @@ func (sum *Sum) handleEndOfRecordMessage() error {
 		}
 	}
 
-	message, err := inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, "")
+	message, err := inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, requestID, eofSequence)
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
@@ -116,16 +198,21 @@ func (sum *Sum) handleEndOfRecordMessage() error {
 		slog.Debug("While sending EOF message", "err", err)
 		return err
 	}
+	delete(sum.requestStates, requestID)
 	return nil
 }
 
-func (sum *Sum) handleDataMessage(fruitRecords []fruititem.FruitItem) error {
+func (sum *Sum) handleDataMessage(requestID string, fruitRecords []fruititem.FruitItem) error {
+	if _, ok := sum.requestStates[requestID]; !ok {
+		sum.requestStates[requestID] = map[string]fruititem.FruitItem{}
+	}
+
 	for _, fruitRecord := range fruitRecords {
-		_, ok := sum.fruitItemMap[fruitRecord.Fruit]
+		_, ok := sum.requestStates[requestID][fruitRecord.Fruit]
 		if ok {
-			sum.fruitItemMap[fruitRecord.Fruit] = sum.fruitItemMap[fruitRecord.Fruit].Sum(fruitRecord)
+			sum.requestStates[requestID][fruitRecord.Fruit] = sum.requestStates[requestID][fruitRecord.Fruit].Sum(fruitRecord)
 		} else {
-			sum.fruitItemMap[fruitRecord.Fruit] = fruitRecord
+			sum.requestStates[requestID][fruitRecord.Fruit] = fruitRecord
 		}
 	}
 	return nil
@@ -140,17 +227,26 @@ func (sum *Sum) logTotalsSnapshot(stage string) error {
 	}
 	defer file.Close()
 
-	keys := make([]string, 0, len(sum.fruitItemMap))
-	for fruit := range sum.fruitItemMap {
-		keys = append(keys, fruit)
-	}
-	sort.Strings(keys)
-
 	var builder strings.Builder
 	builder.WriteString(stage)
 	builder.WriteString("\n")
-	for _, fruit := range keys {
-		builder.WriteString(fmt.Sprintf("%s,%d\n", fruit, sum.fruitItemMap[fruit].Amount))
+
+	requestIDs := make([]string, 0, len(sum.requestStates))
+	for requestID := range sum.requestStates {
+		requestIDs = append(requestIDs, requestID)
+	}
+	sort.Strings(requestIDs)
+
+	for _, requestID := range requestIDs {
+		builder.WriteString(fmt.Sprintf("[%s]\n", requestID))
+		keys := make([]string, 0, len(sum.requestStates[requestID]))
+		for fruit := range sum.requestStates[requestID] {
+			keys = append(keys, fruit)
+		}
+		sort.Strings(keys)
+		for _, fruit := range keys {
+			builder.WriteString(fmt.Sprintf("%s,%d\n", fruit, sum.requestStates[requestID][fruit].Amount))
+		}
 	}
 	builder.WriteString("\n")
 

@@ -10,6 +10,8 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const queuePrefetchCount = 1
+
 type QueueMiddleware struct {
 	ch          *amqp.Channel
 	rabbitQueue amqp.Queue
@@ -57,6 +59,11 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg Message, ack func
 	m.consumerTag = fmt.Sprintf("queue-%s-%d", m.rabbitQueue.Name, time.Now().UnixNano())
 	// We could use something as uuid but this would require an additional dependency that would modify the go.mod file
 	// to avoid possible conflicts from discarding the go.mod changes, we just use timestamps
+
+	// TODO: si solucionamos la sincronizacion entre sums esto dejaria de ser necesario
+	if err := m.ch.Qos(queuePrefetchCount, 0, false); err != nil {
+		return ErrMessageMiddlewareMessage
+	}
 
 	msgs, err := m.ch.Consume(
 		m.rabbitQueue.Name,

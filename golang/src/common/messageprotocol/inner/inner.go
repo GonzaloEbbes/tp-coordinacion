@@ -11,14 +11,16 @@ import (
 type MessageType string
 
 const (
-	TypeData MessageType = "data"
-	TypeEOF  MessageType = "eof"
+	TypeData   MessageType = "data"
+	TypeEOF    MessageType = "eof"
+	TypeSumEOF MessageType = "sum_eof"
 )
 
 type Envelope struct {
 	Type      MessageType           `json:"type"`
 	Payload   []fruititem.FruitItem `json:"payload,omitempty"`
 	RequestID string                `json:"request_id,omitempty"`
+	Sequence  uint64                `json:"sequence,omitempty"`
 }
 
 func serializeJSON(message Envelope) ([]byte, error) {
@@ -33,11 +35,12 @@ func deserializeJSON(message []byte) (*Envelope, error) {
 	return &data, nil
 }
 
-func SerializeMessage(messageType MessageType, payload []fruititem.FruitItem, requestID string) (*middleware.Message, error) {
+func SerializeMessage(messageType MessageType, payload []fruititem.FruitItem, requestID string, sequence uint64) (*middleware.Message, error) {
 	body, err := serializeJSON(Envelope{
 		Type:      messageType,
 		Payload:   payload,
 		RequestID: requestID,
+		Sequence:  sequence,
 	})
 	if err != nil {
 		return nil, err

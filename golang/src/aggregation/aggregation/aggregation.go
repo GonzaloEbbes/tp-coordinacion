@@ -81,7 +81,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage() error {
 	slog.Info("Received End Of Records message")
 
 	fruitTopRecords := aggregation.buildFruitTop()
-	message, err := inner.SerializeMessage(inner.TypeData, fruitTopRecords, "")
+	message, err := inner.SerializeMessage(inner.TypeData, fruitTopRecords, "", 0)
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err)
 		return err
@@ -91,7 +91,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage() error {
 		return err
 	}
 
-	message, err = inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, "")
+	message, err = inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, "", 0)
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
