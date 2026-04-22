@@ -101,7 +101,6 @@ func (sum *Sum) Run() {
 	sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessage(msg, ack, nack)
 	})
-
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
