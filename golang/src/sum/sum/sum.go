@@ -32,7 +32,6 @@ type Sum struct {
 	controlPublisher middleware.Middleware
 	outputExchange   middleware.Middleware
 	requestStates    map[string]map[string]fruititem.FruitItem
-	pendingEOFs      map[string]uint64
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -88,11 +87,9 @@ func NewSum(config SumConfig) (*Sum, error) {
 		controlPublisher: controlPublisher,
 		outputExchange:   outputExchange,
 		requestStates:    map[string]map[string]fruititem.FruitItem{},
-		pendingEOFs:      map[string]uint64{},
 	}, nil
 }
 
-// TODO: validar si no es necesario que se espere o joinee esta go routine, como minimo al salir
 func (sum *Sum) Run() {
 	go sum.controlConsumer.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessage(msg, ack, nack)
@@ -120,17 +117,11 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 	}
 
 	if envelope.Type == inner.TypeSumEOF {
-		sum.registerPendingEOF(envelope.RequestID, envelope.Sequence)
+		if err := sum.handleEndOfRecordMessage(envelope.RequestID, envelope.Sequence); err != nil {
+			slog.Error("While handling end of record message", "err", err)
+		}
 		return
 	}
-
-	if err := sum.processPendingEOFsBefore(envelope.Sequence); err != nil {
-		slog.Error("While processing pending eof messages", "err", err)
-		return
-	}
-
-	// TODO: antes de cerrar definitivamente un request por EOF pendiente, hay que
-	// incorporar el control fino de mensajes nacked/reintentados asociados a ese request.
 	if err := sum.handleDataMessage(envelope.RequestID, envelope.Payload); err != nil {
 		slog.Error("While handling data message", "err", err)
 		return
@@ -146,25 +137,6 @@ func (sum *Sum) broadcastEOF(requestID string, sequence uint64) error {
 		return err
 	}
 	return sum.controlPublisher.Send(*message)
-}
-
-func (sum *Sum) registerPendingEOF(requestID string, sequence uint64) {
-	if current, ok := sum.pendingEOFs[requestID]; ok && current >= sequence {
-		return
-	}
-	sum.pendingEOFs[requestID] = sequence
-}
-
-func (sum *Sum) processPendingEOFsBefore(currentSequence uint64) error {
-	for requestID, eofSequence := range sum.pendingEOFs {
-		if eofSequence < currentSequence {
-			if err := sum.handleEndOfRecordMessage(requestID, eofSequence); err != nil {
-				return err
-			}
-			delete(sum.pendingEOFs, requestID)
-		}
-	}
-	return nil
 }
 
 func (sum *Sum) handleEndOfRecordMessage(requestID string, eofSequence uint64) error {
