@@ -2,7 +2,9 @@ package join
 
 import (
 	"log/slog"
+	"sort"
 
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
@@ -20,8 +22,12 @@ type JoinConfig struct {
 }
 
 type Join struct {
-	inputQueue  middleware.Middleware
-	outputQueue middleware.Middleware
+	inputQueue        middleware.Middleware
+	outputQueue       middleware.Middleware
+	aggregationAmount int
+	requestStates     map[string]map[string]fruititem.FruitItem
+	partialCounts     map[string]int
+	topSize           int
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
@@ -38,7 +44,14 @@ func NewJoin(config JoinConfig) (*Join, error) {
 		return nil, err
 	}
 
-	return &Join{inputQueue: inputQueue, outputQueue: outputQueue}, nil
+	return &Join{
+		inputQueue:        inputQueue,
+		outputQueue:       outputQueue,
+		aggregationAmount: config.AggregationAmount,
+		requestStates:     map[string]map[string]fruititem.FruitItem{},
+		partialCounts:     map[string]int{},
+		topSize:           config.TopSize,
+	}, nil
 }
 
 func (join *Join) Run() {
@@ -59,7 +72,59 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 		return
 	}
 
-	if err := join.outputQueue.Send(msg); err != nil {
-		slog.Error("While sending top", "err", err)
+	if err := join.handlePartialTop(envelope.RequestID, envelope.Payload, envelope.Sequence); err != nil {
+		slog.Error("While handling partial top", "err", err)
 	}
+}
+
+func (join *Join) handlePartialTop(requestID string, fruitRecords []fruititem.FruitItem, sequence uint64) error {
+	if _, ok := join.requestStates[requestID]; !ok {
+		join.requestStates[requestID] = map[string]fruititem.FruitItem{}
+	}
+
+	requestState := join.requestStates[requestID]
+	for _, fruitRecord := range fruitRecords {
+		if current, ok := requestState[fruitRecord.Fruit]; ok {
+			requestState[fruitRecord.Fruit] = current.Sum(fruitRecord)
+		} else {
+			requestState[fruitRecord.Fruit] = fruitRecord
+		}
+	}
+
+	// TODO: reemplazar este contador por confirmaciones por id/nombre de
+	// Aggregation para evitar cerrar antes de tiempo ante mensajes duplicados.
+	join.partialCounts[requestID]++
+	if join.partialCounts[requestID] < join.aggregationAmount {
+		return nil
+	}
+
+	fruitTopRecords := join.buildFruitTop(requestID)
+	message, err := inner.SerializeMessage(inner.TypeData, fruitTopRecords, requestID, sequence)
+	if err != nil {
+		return err
+	}
+	if err := join.outputQueue.Send(*message); err != nil {
+		return err
+	}
+
+	delete(join.requestStates, requestID)
+	delete(join.partialCounts, requestID)
+	return nil
+}
+
+func (join *Join) buildFruitTop(requestID string) []fruititem.FruitItem {
+	fruitItemMap, ok := join.requestStates[requestID]
+	if !ok {
+		return []fruititem.FruitItem{}
+	}
+
+	fruitItems := make([]fruititem.FruitItem, 0, len(fruitItemMap))
+	for _, item := range fruitItemMap {
+		fruitItems = append(fruitItems, item)
+	}
+	sort.SliceStable(fruitItems, func(i, j int) bool {
+		return fruitItems[j].Less(fruitItems[i])
+	})
+	finalTopSize := min(join.topSize, len(fruitItems))
+	return fruitItems[:finalTopSize]
 }

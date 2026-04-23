@@ -2,10 +2,12 @@ package sum
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -30,8 +32,9 @@ type Sum struct {
 	inputQueue       middleware.Middleware
 	controlConsumer  middleware.Middleware
 	controlPublisher middleware.Middleware
-	outputExchange   middleware.Middleware
+	outputExchanges  []middleware.Middleware
 	requestStates    map[string]map[string]fruititem.FruitItem
+	stateMutex       sync.Mutex
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -68,24 +71,30 @@ func NewSum(config SumConfig) (*Sum, error) {
 		return nil, err
 	}
 
-	outputExchangeRouteKeys := make([]string, config.AggregationAmount)
+	outputExchanges := make([]middleware.Middleware, config.AggregationAmount)
 	for i := range config.AggregationAmount {
-		outputExchangeRouteKeys[i] = fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
-	}
+		routeKey := fmt.Sprintf("%s_%d", config.AggregationPrefix, i)
 
-	outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, outputExchangeRouteKeys, connSettings)
-	if err != nil {
-		inputQueue.Close()
-		controlConsumer.Close()
-		controlPublisher.Close()
-		return nil, err
+		outputExchange, err := middleware.CreateExchangeMiddleware(config.AggregationPrefix, []string{routeKey}, connSettings)
+		if err != nil {
+			inputQueue.Close()
+			controlConsumer.Close()
+			controlPublisher.Close()
+			for _, exchange := range outputExchanges {
+				if exchange != nil {
+					exchange.Close()
+				}
+			}
+			return nil, err
+		}
+		outputExchanges[i] = outputExchange
 	}
 
 	return &Sum{
 		inputQueue:       inputQueue,
 		controlConsumer:  controlConsumer,
 		controlPublisher: controlPublisher,
-		outputExchange:   outputExchange,
+		outputExchanges:  outputExchanges,
 		requestStates:    map[string]map[string]fruititem.FruitItem{},
 	}, nil
 }
@@ -142,19 +151,22 @@ func (sum *Sum) broadcastEOF(requestID string, sequence uint64) error {
 func (sum *Sum) handleEndOfRecordMessage(requestID string, eofSequence uint64) error {
 	slog.Info("Received End Of Records message", "request_id", requestID, "sequence", eofSequence)
 
-	fruitItemMap, ok := sum.requestStates[requestID]
-	if !ok {
-		return nil
+	sum.stateMutex.Lock()
+	fruitItems := make([]fruititem.FruitItem, 0, len(sum.requestStates[requestID]))
+	for _, fruitItem := range sum.requestStates[requestID] {
+		fruitItems = append(fruitItems, fruitItem)
 	}
+	delete(sum.requestStates, requestID)
+	sum.stateMutex.Unlock()
 
-	for key := range fruitItemMap {
-		fruitRecord := []fruititem.FruitItem{fruitItemMap[key]}
+	for _, fruitItem := range fruitItems {
+		fruitRecord := []fruititem.FruitItem{fruitItem}
 		message, err := inner.SerializeMessage(inner.TypeData, fruitRecord, requestID, 0)
 		if err != nil {
 			slog.Debug("While serializing message", "err", err)
 			return err
 		}
-		if err := sum.outputExchange.Send(*message); err != nil {
+		if err := sum.outputExchanges[sum.aggregationIndex(requestID, fruitItem.Fruit)].Send(*message); err != nil {
 			slog.Debug("While sending message", "err", err)
 			return err
 		}
@@ -165,15 +177,26 @@ func (sum *Sum) handleEndOfRecordMessage(requestID string, eofSequence uint64) e
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
 	}
-	if err := sum.outputExchange.Send(*message); err != nil {
-		slog.Debug("While sending EOF message", "err", err)
-		return err
+	for _, outputExchange := range sum.outputExchanges {
+		if err := outputExchange.Send(*message); err != nil {
+			slog.Debug("While sending EOF message", "err", err)
+			return err
+		}
 	}
-	delete(sum.requestStates, requestID)
 	return nil
 }
 
+// aggregationIndex returns the deterministic Aggregation partition for a fruit
+// within a request. Including requestID keeps different clients independent.
+func (sum *Sum) aggregationIndex(requestID string, fruit string) int {
+	hasher := fnv.New32a()
+	key := requestID + "|" + fruit
+	_, _ = hasher.Write([]byte(key))
+	return int(hasher.Sum32() % uint32(len(sum.outputExchanges)))
+}
+
 func (sum *Sum) handleDataMessage(requestID string, fruitRecords []fruititem.FruitItem) error {
+	sum.stateMutex.Lock()
 	if _, ok := sum.requestStates[requestID]; !ok {
 		sum.requestStates[requestID] = map[string]fruititem.FruitItem{}
 	}
@@ -186,22 +209,18 @@ func (sum *Sum) handleDataMessage(requestID string, fruitRecords []fruititem.Fru
 			sum.requestStates[requestID][fruitRecord.Fruit] = fruitRecord
 		}
 	}
+	sum.stateMutex.Unlock()
 	return nil
 }
 
 // TODO: eliminar esto, es solo para probar que los containers de sum esten
 // realmente haciendo cosas
 func (sum *Sum) logTotalsSnapshot(stage string) error {
-	file, err := os.OpenFile(totalsLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
 	var builder strings.Builder
 	builder.WriteString(stage)
 	builder.WriteString("\n")
 
+	sum.stateMutex.Lock()
 	requestIDs := make([]string, 0, len(sum.requestStates))
 	for requestID := range sum.requestStates {
 		requestIDs = append(requestIDs, requestID)
@@ -219,7 +238,14 @@ func (sum *Sum) logTotalsSnapshot(stage string) error {
 			builder.WriteString(fmt.Sprintf("%s,%d\n", fruit, sum.requestStates[requestID][fruit].Amount))
 		}
 	}
+	sum.stateMutex.Unlock()
 	builder.WriteString("\n")
+
+	file, err := os.OpenFile(totalsLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
 	_, err = file.WriteString(builder.String())
 	return err
