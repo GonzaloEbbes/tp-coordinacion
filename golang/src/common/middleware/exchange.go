@@ -19,6 +19,9 @@ type ExchangeMiddleware struct {
 
 	shouldStopLock sync.Mutex
 	shouldStop     bool
+	inFlight       sync.WaitGroup
+	callbackGate   sync.Mutex
+	closing        bool
 }
 
 func NewExchangeMiddleware(hostname string, port int, exchangeName string, routingKeys []string) (*ExchangeMiddleware, error) {
@@ -103,15 +106,29 @@ func (m *ExchangeMiddleware) StartConsuming(callbackFunc func(msg Message, ack f
 	m.shouldStopLock.Lock()
 	m.shouldStop = false
 	m.shouldStopLock.Unlock()
+	m.callbackGate.Lock()
+	m.closing = false
+	m.callbackGate.Unlock()
 
 	for msg := range msgs {
+		m.callbackGate.Lock()
+		if m.closing {
+			m.callbackGate.Unlock()
+			break
+		}
+		m.inFlight.Add(1)
+		m.callbackGate.Unlock()
+
 		ack := func() {
 			_ = msg.Ack(false)
 		}
 		nack := func() {
 			_ = msg.Nack(false, false)
 		}
-		callbackFunc(Message{Body: string(msg.Body)}, ack, nack)
+		func() {
+			defer m.inFlight.Done()
+			callbackFunc(Message{Body: string(msg.Body)}, ack, nack)
+		}()
 
 		var shouldStop bool
 		m.shouldStopLock.Lock()
@@ -173,6 +190,11 @@ func (m *ExchangeMiddleware) Send(msg Message) (err error) {
 
 func (m *ExchangeMiddleware) Close() error {
 	var closeErr error
+	_ = m.StopConsuming()
+	m.callbackGate.Lock()
+	m.closing = true
+	m.callbackGate.Unlock()
+	m.inFlight.Wait()
 
 	if m.ch != nil {
 		if err := m.ch.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {

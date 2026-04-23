@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/aggregation/aggregation"
 )
@@ -80,6 +83,17 @@ func run() int {
 		slog.Error("While initializing aggregation", "err", err)
 		return 1
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		slog.Info("Termination signal received")
+		if err := server.Close(); err != nil {
+			slog.Error("While closing aggregation", "err", err)
+		}
+	}()
 
 	server.Run()
 	return 0

@@ -20,6 +20,9 @@ type QueueMiddleware struct {
 
 	shouldStopLock sync.Mutex
 	shouldStop     bool
+	inFlight       sync.WaitGroup
+	callbackGate   sync.Mutex
+	closing        bool
 }
 
 func NewQueueMiddleware(hostname string, port int, queueName string) (*QueueMiddleware, error) {
@@ -83,15 +86,29 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg Message, ack func
 	m.shouldStopLock.Lock()
 	m.shouldStop = false // We set the value here to ensure that calling StartConsuming would restart consumption if it was stopped before
 	m.shouldStopLock.Unlock()
+	m.callbackGate.Lock()
+	m.closing = false
+	m.callbackGate.Unlock()
 
 	for msg := range msgs {
+		m.callbackGate.Lock()
+		if m.closing {
+			m.callbackGate.Unlock()
+			break
+		}
+		m.inFlight.Add(1)
+		m.callbackGate.Unlock()
+
 		ack := func() {
 			_ = msg.Ack(false)
 		}
 		nack := func() {
 			_ = msg.Nack(false, false)
 		}
-		callbackFunc(Message{Body: string(msg.Body)}, ack, nack)
+		func() {
+			defer m.inFlight.Done()
+			callbackFunc(Message{Body: string(msg.Body)}, ack, nack)
+		}()
 
 		var shouldStop bool
 		m.shouldStopLock.Lock()
@@ -142,10 +159,12 @@ func (m *QueueMiddleware) Send(msg Message) (err error) {
 }
 
 func (m *QueueMiddleware) Close() error {
-	// TODO: If Close runs while the current callback is still processing a message,
-	// Ack/Nack may race against channel shutdown. A simple future improvement would
-	// be to track in-flight callbacks and wait for the current one before closing.
 	var closeErr error
+	_ = m.StopConsuming()
+	m.callbackGate.Lock()
+	m.closing = true
+	m.callbackGate.Unlock()
+	m.inFlight.Wait()
 
 	if m.ch != nil {
 		if err := m.ch.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {

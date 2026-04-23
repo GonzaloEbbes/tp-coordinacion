@@ -1,6 +1,7 @@
 package join
 
 import (
+	"errors"
 	"log/slog"
 	"sort"
 
@@ -58,6 +59,13 @@ func (join *Join) Run() {
 	join.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		join.handleMessage(msg, ack, nack)
 	})
+}
+
+func (join *Join) Close() error {
+	return errors.Join(
+		join.inputQueue.Close(),
+		join.outputQueue.Close(),
+	)
 }
 
 func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) {

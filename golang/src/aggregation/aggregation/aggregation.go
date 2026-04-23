@@ -1,6 +1,7 @@
 package aggregation
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -63,6 +64,13 @@ func (aggregation *Aggregation) Run() {
 	aggregation.inputExchange.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		aggregation.handleMessage(msg, ack, nack)
 	})
+}
+
+func (aggregation *Aggregation) Close() error {
+	return errors.Join(
+		aggregation.inputExchange.Close(),
+		aggregation.outputQueue.Close(),
+	)
 }
 
 func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func(), nack func()) {

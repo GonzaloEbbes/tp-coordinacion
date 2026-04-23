@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"log/slog"
 	"net"
 	"os"
@@ -8,10 +9,10 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
-	"github.com/7574-sistemas-distribuidos/tp-coordinacion/gateway/clientregistry"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/external"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/gateway/clientregistry"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/gateway/messagehandler"
 )
 
@@ -86,13 +87,29 @@ func (gateway *Gateway) Run() error {
 		go gateway.handleClientRequest(client)
 	}
 
-	gateway.outputQueue.StopConsuming()
-	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
-		for _, client := range clients {
-			client.Conn.Close()
-		}
-	})
+	if err := gateway.Close(); err != nil {
+		slog.Error("While closing gateway", "err", err)
+		return err
+	}
 	return nil
+}
+
+func (gateway *Gateway) Close() error {
+	gateway.running.Store(false)
+	if gateway.listener != nil {
+		_ = gateway.listener.Close()
+	}
+	clientsToClose := []clientregistry.ClientState{}
+	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
+		clientsToClose = append(clientsToClose, clients...)
+	})
+	for _, client := range clientsToClose {
+		client.Conn.Close()
+	}
+	return errors.Join(
+		gateway.inputQueue.Close(),
+		gateway.outputQueue.Close(),
+	)
 }
 
 func (gateway *Gateway) handleSignals() {
@@ -147,6 +164,7 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 	}
 
 	clientIndex := -1
+	var clientState clientregistry.ClientState
 
 	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
 		for i, client := range clients {
@@ -154,31 +172,35 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 				continue
 			}
 
-			if err := external.WriteFruitTop(client.Conn, envelope.Payload); err != nil {
-				slog.Debug("While writing FRUIT_TOP message", "err", err)
-				return
-			}
-			msgType, err := external.ReadMsgType(client.Conn)
-			if err != nil {
-				slog.Debug("While reading message type", "err", err)
-				return
-			}
-			if msgType != external.Ack {
-				slog.Debug("Expected ACK message")
-				return
-			}
 			clientIndex = i
+			clientState = client
 			return
 		}
 		slog.Warn("No client found for result message", "request_id", envelope.RequestID)
 		nack()
 	})
 
-	if clientIndex >= 0 {
-		gateway.registry.Remove(clientIndex)
-		ack()
+	if clientIndex < 0 {
 		return
 	}
+	if err := external.WriteFruitTop(clientState.Conn, envelope.Payload); err != nil {
+		slog.Debug("While writing FRUIT_TOP message", "err", err)
+		nack()
+		return
+	}
+	msgType, err := external.ReadMsgType(clientState.Conn)
+	if err != nil {
+		slog.Debug("While reading message type", "err", err)
+		nack()
+		return
+	}
+	if msgType != external.Ack {
+		slog.Debug("Expected ACK message")
+		nack()
+		return
+	}
+	gateway.registry.Remove(clientIndex)
+	ack()
 }
 
 func (gateway *Gateway) handleFruitRecordMessage(client clientregistry.ClientState) error {

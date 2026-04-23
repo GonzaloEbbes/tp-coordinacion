@@ -1,6 +1,7 @@
 package sum
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -104,6 +105,18 @@ func (sum *Sum) Run() {
 	sum.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
 		sum.handleMessage(msg, ack, nack)
 	})
+}
+
+func (sum *Sum) Close() error {
+	errs := []error{
+		sum.inputQueue.Close(),
+		sum.controlConsumer.Close(),
+		sum.controlPublisher.Close(),
+	}
+	for _, outputExchange := range sum.outputExchanges {
+		errs = append(errs, outputExchange.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
