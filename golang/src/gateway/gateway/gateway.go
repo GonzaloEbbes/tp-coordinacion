@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/gateway/clientregistry"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/external"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
@@ -134,24 +135,26 @@ loop:
 }
 
 func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(), nack func()) {
+	envelope, err := inner.DeserializeMessage(&msg)
+	if err != nil {
+		slog.Debug("While deserializing output message", "err", err)
+		nack()
+		return
+	}
+	if envelope.Type != inner.TypeData {
+		ack()
+		return
+	}
+
 	clientIndex := -1
 
 	gateway.registry.WithLock(func(clients []clientregistry.ClientState) {
 		for i, client := range clients {
-			fruitTop, err := client.Handler.DeserializeResultMessage(&msg)
-			if err != nil {
-				slog.Debug("While reading from output queue", "err", err)
-				nack()
-				gateway.outputQueue.StopConsuming()
-				return
-			}
-
-			// The message handler can't process this message
-			if fruitTop == nil {
+			if client.Handler.RequestID() != envelope.RequestID {
 				continue
 			}
 
-			if err := external.WriteFruitTop(client.Conn, fruitTop); err != nil {
+			if err := external.WriteFruitTop(client.Conn, envelope.Payload); err != nil {
 				slog.Debug("While writing FRUIT_TOP message", "err", err)
 				return
 			}
@@ -167,7 +170,7 @@ func (gateway *Gateway) handleClientResponse(msg middleware.Message, ack func(),
 			clientIndex = i
 			return
 		}
-		slog.Warn("No client handler could process this message")
+		slog.Warn("No client found for result message", "request_id", envelope.RequestID)
 		nack()
 	})
 

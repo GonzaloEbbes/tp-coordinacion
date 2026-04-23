@@ -38,3 +38,7 @@ func (messageHandler *MessageHandler) DeserializeResultMessage(message *middlewa
 	}
 	return envelope.Payload, nil
 }
+
+func (messageHandler *MessageHandler) RequestID() string {
+	return messageHandler.requestID
+}
