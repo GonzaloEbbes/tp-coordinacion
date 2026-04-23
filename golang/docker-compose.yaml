@@ -1,182 +1,143 @@
 services:
-  ciaahtbord_0:
+  aggregation_0:
+    build:
+      context: ./src/
+      dockerfile: aggregation/Dockerfile
+    container_name: aggregation_0
+    depends_on:
+    - join
+    environment:
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=0
+    - MOM_HOST=rabbitmq
+    - MOM_PORT=5672
+    - OUTPUT_QUEUE=join_queue
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
+    - TOP_SIZE=3
+  aggregation_1:
+    build:
+      context: ./src/
+      dockerfile: aggregation/Dockerfile
+    container_name: aggregation_1
+    depends_on:
+    - join
+    environment:
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=1
+    - MOM_HOST=rabbitmq
+    - MOM_PORT=5672
+    - OUTPUT_QUEUE=join_queue
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
+    - TOP_SIZE=3
+  aggregation_2:
+    build:
+      context: ./src/
+      dockerfile: aggregation/Dockerfile
+    container_name: aggregation_2
+    depends_on:
+    - join
+    environment:
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=2
+    - MOM_HOST=rabbitmq
+    - MOM_PORT=5672
+    - OUTPUT_QUEUE=join_queue
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
+    - TOP_SIZE=3
+  client_0:
     build:
       context: ./src/
       dockerfile: client/Dockerfile
-    container_name: ciaahtbord_0
+    container_name: client_0
     depends_on:
-    - eqtatg_0
-    - eqtatg_1
-    - eqtatg_2
+    - sum_0
+    - sum_1
+    - sum_2
     environment:
     - INPUT_FILE=/datasets/input_0.csv
     - OUTPUT_FILE=/output/output_0.csv
-    - SERVER_HOST=uoipzt
+    - SERVER_HOST=gateway
     - SERVER_PORT=5678
     volumes:
     - ./datasets:/datasets
     - ./output:/output
-  ciaahtbord_1:
+  client_1:
     build:
       context: ./src/
       dockerfile: client/Dockerfile
-    container_name: ciaahtbord_1
+    container_name: client_1
     depends_on:
-    - eqtatg_0
-    - eqtatg_1
-    - eqtatg_2
+    - sum_0
+    - sum_1
+    - sum_2
     environment:
     - INPUT_FILE=/datasets/input_1.csv
     - OUTPUT_FILE=/output/output_1.csv
-    - SERVER_HOST=uoipzt
+    - SERVER_HOST=gateway
     - SERVER_PORT=5678
     volumes:
     - ./datasets:/datasets
     - ./output:/output
-  ciaahtbord_2:
+  client_2:
     build:
       context: ./src/
       dockerfile: client/Dockerfile
-    container_name: ciaahtbord_2
+    container_name: client_2
     depends_on:
-    - eqtatg_0
-    - eqtatg_1
-    - eqtatg_2
+    - sum_0
+    - sum_1
+    - sum_2
     environment:
     - INPUT_FILE=/datasets/input_2.csv
     - OUTPUT_FILE=/output/output_2.csv
-    - SERVER_HOST=uoipzt
+    - SERVER_HOST=gateway
     - SERVER_PORT=5678
     volumes:
     - ./datasets:/datasets
     - ./output:/output
-  ckcariaxuf_0:
+  gateway:
     build:
       context: ./src/
-      dockerfile: aggregation/Dockerfile
-    container_name: ckcariaxuf_0
+      dockerfile: gateway/Dockerfile
+    container_name: gateway
     depends_on:
-    - oxnflfxovn
+      rabbitmq:
+        condition: service_healthy
     environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=0
-    - MOM_HOST=szgpulnqog
+    - INPUT_QUEUE=results_queue
+    - MOM_HOST=rabbitmq
     - MOM_PORT=5672
-    - OUTPUT_QUEUE=bqdchp
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-    - TOP_SIZE=3
-  ckcariaxuf_1:
-    build:
-      context: ./src/
-      dockerfile: aggregation/Dockerfile
-    container_name: ckcariaxuf_1
-    depends_on:
-    - oxnflfxovn
-    environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=1
-    - MOM_HOST=szgpulnqog
-    - MOM_PORT=5672
-    - OUTPUT_QUEUE=bqdchp
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-    - TOP_SIZE=3
-  ckcariaxuf_2:
-    build:
-      context: ./src/
-      dockerfile: aggregation/Dockerfile
-    container_name: ckcariaxuf_2
-    depends_on:
-    - oxnflfxovn
-    environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=2
-    - MOM_HOST=szgpulnqog
-    - MOM_PORT=5672
-    - OUTPUT_QUEUE=bqdchp
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-    - TOP_SIZE=3
-  eqtatg_0:
-    build:
-      context: ./src/
-      dockerfile: sum/Dockerfile
-    container_name: eqtatg_0
-    depends_on:
-    - ckcariaxuf_0
-    - ckcariaxuf_1
-    - ckcariaxuf_2
-    environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=0
-    - INPUT_QUEUE=vxwdcotugj
-    - MOM_HOST=szgpulnqog
-    - MOM_PORT=5672
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-  eqtatg_1:
-    build:
-      context: ./src/
-      dockerfile: sum/Dockerfile
-    container_name: eqtatg_1
-    depends_on:
-    - ckcariaxuf_0
-    - ckcariaxuf_1
-    - ckcariaxuf_2
-    environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=1
-    - INPUT_QUEUE=vxwdcotugj
-    - MOM_HOST=szgpulnqog
-    - MOM_PORT=5672
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-  eqtatg_2:
-    build:
-      context: ./src/
-      dockerfile: sum/Dockerfile
-    container_name: eqtatg_2
-    depends_on:
-    - ckcariaxuf_0
-    - ckcariaxuf_1
-    - ckcariaxuf_2
-    environment:
-    - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - ID=2
-    - INPUT_QUEUE=vxwdcotugj
-    - MOM_HOST=szgpulnqog
-    - MOM_PORT=5672
-    - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
-  oxnflfxovn:
+    - OUTPUT_QUEUE=input_queue
+    - SERVER_HOST=gateway
+    - SERVER_PORT=5678
+  join:
     build:
       context: ./src/
       dockerfile: join/Dockerfile
-    container_name: oxnflfxovn
+    container_name: join
     depends_on:
-    - uoipzt
+    - gateway
     environment:
     - AGGREGATION_AMOUNT=3
-    - AGGREGATION_PREFIX=ckcariaxuf
-    - INPUT_QUEUE=bqdchp
-    - MOM_HOST=szgpulnqog
+    - AGGREGATION_PREFIX=aggregation
+    - INPUT_QUEUE=join_queue
+    - MOM_HOST=rabbitmq
     - MOM_PORT=5672
-    - OUTPUT_QUEUE=zqjpgke
+    - OUTPUT_QUEUE=results_queue
     - SUM_AMOUNT=3
-    - SUM_PREFIX=eqtatg
+    - SUM_PREFIX=sum
     - TOP_SIZE=3
-  szgpulnqog:
+  rabbitmq:
     build:
       context: ./src/rabbitmq
       dockerfile: Dockerfile
-    container_name: szgpulnqog
+    container_name: rabbitmq
     environment:
     - RABBITMQ_LOG_LEVELS=error
     healthcheck:
@@ -188,18 +149,57 @@ services:
     ports:
     - 5672:5672
     - 15672:15672
-  uoipzt:
+  sum_0:
     build:
       context: ./src/
-      dockerfile: gateway/Dockerfile
-    container_name: uoipzt
+      dockerfile: sum/Dockerfile
+    container_name: sum_0
     depends_on:
-      szgpulnqog:
-        condition: service_healthy
+    - aggregation_0
+    - aggregation_1
+    - aggregation_2
     environment:
-    - INPUT_QUEUE=zqjpgke
-    - MOM_HOST=szgpulnqog
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=0
+    - INPUT_QUEUE=input_queue
+    - MOM_HOST=rabbitmq
     - MOM_PORT=5672
-    - OUTPUT_QUEUE=vxwdcotugj
-    - SERVER_HOST=uoipzt
-    - SERVER_PORT=5678
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
+  sum_1:
+    build:
+      context: ./src/
+      dockerfile: sum/Dockerfile
+    container_name: sum_1
+    depends_on:
+    - aggregation_0
+    - aggregation_1
+    - aggregation_2
+    environment:
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=1
+    - INPUT_QUEUE=input_queue
+    - MOM_HOST=rabbitmq
+    - MOM_PORT=5672
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
+  sum_2:
+    build:
+      context: ./src/
+      dockerfile: sum/Dockerfile
+    container_name: sum_2
+    depends_on:
+    - aggregation_0
+    - aggregation_1
+    - aggregation_2
+    environment:
+    - AGGREGATION_AMOUNT=3
+    - AGGREGATION_PREFIX=aggregation
+    - ID=2
+    - INPUT_QUEUE=input_queue
+    - MOM_HOST=rabbitmq
+    - MOM_PORT=5672
+    - SUM_AMOUNT=3
+    - SUM_PREFIX=sum
