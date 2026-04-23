@@ -21,6 +21,7 @@ type Envelope struct {
 	Payload   []fruititem.FruitItem `json:"payload,omitempty"`
 	RequestID string                `json:"request_id,omitempty"`
 	Sequence  uint64                `json:"sequence,omitempty"`
+	Origin    string                `json:"origin,omitempty"`
 }
 
 func serializeJSON(message Envelope) ([]byte, error) {
@@ -36,11 +37,16 @@ func deserializeJSON(message []byte) (*Envelope, error) {
 }
 
 func SerializeMessage(messageType MessageType, payload []fruititem.FruitItem, requestID string, sequence uint64) (*middleware.Message, error) {
+	return SerializeMessageFrom(messageType, payload, requestID, sequence, "")
+}
+
+func SerializeMessageFrom(messageType MessageType, payload []fruititem.FruitItem, requestID string, sequence uint64, origin string) (*middleware.Message, error) {
 	body, err := serializeJSON(Envelope{
 		Type:      messageType,
 		Payload:   payload,
 		RequestID: requestID,
 		Sequence:  sequence,
+		Origin:    origin,
 	})
 	if err != nil {
 		return nil, err

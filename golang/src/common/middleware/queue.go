@@ -60,7 +60,9 @@ func (m *QueueMiddleware) StartConsuming(callbackFunc func(msg Message, ack func
 	// We could use something as uuid but this would require an additional dependency that would modify the go.mod file
 	// to avoid possible conflicts from discarding the go.mod changes, we just use timestamps
 
-	// TODO: si solucionamos la sincronizacion entre sums esto dejaria de ser necesario
+	// With manual ACKs, prefetch=1 prevents RabbitMQ from reserving several
+	// messages ahead of the current one. The Sum EOF coordination relies on this
+	// to avoid closing a request before older reserved data is processed.
 	if err := m.ch.Qos(queuePrefetchCount, 0, false); err != nil {
 		return ErrMessageMiddlewareMessage
 	}

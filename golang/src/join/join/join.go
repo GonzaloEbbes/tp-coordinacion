@@ -22,12 +22,12 @@ type JoinConfig struct {
 }
 
 type Join struct {
-	inputQueue        middleware.Middleware
-	outputQueue       middleware.Middleware
-	aggregationAmount int
-	requestStates     map[string]map[string]fruititem.FruitItem
-	partialCounts     map[string]int
-	topSize           int
+	inputQueue           middleware.Middleware
+	outputQueue          middleware.Middleware
+	aggregationAmount    int
+	requestStates        map[string]map[string]fruititem.FruitItem
+	partialConfirmations map[string]map[string]struct{}
+	topSize              int
 }
 
 func NewJoin(config JoinConfig) (*Join, error) {
@@ -45,12 +45,12 @@ func NewJoin(config JoinConfig) (*Join, error) {
 	}
 
 	return &Join{
-		inputQueue:        inputQueue,
-		outputQueue:       outputQueue,
-		aggregationAmount: config.AggregationAmount,
-		requestStates:     map[string]map[string]fruititem.FruitItem{},
-		partialCounts:     map[string]int{},
-		topSize:           config.TopSize,
+		inputQueue:           inputQueue,
+		outputQueue:          outputQueue,
+		aggregationAmount:    config.AggregationAmount,
+		requestStates:        map[string]map[string]fruititem.FruitItem{},
+		partialConfirmations: map[string]map[string]struct{}{},
+		topSize:              config.TopSize,
 	}, nil
 }
 
@@ -72,12 +72,25 @@ func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func())
 		return
 	}
 
-	if err := join.handlePartialTop(envelope.RequestID, envelope.Payload, envelope.Sequence); err != nil {
+	if err := join.handlePartialTop(envelope.RequestID, envelope.Payload, envelope.Sequence, envelope.Origin); err != nil {
 		slog.Error("While handling partial top", "err", err)
 	}
 }
 
-func (join *Join) handlePartialTop(requestID string, fruitRecords []fruititem.FruitItem, sequence uint64) error {
+func (join *Join) handlePartialTop(requestID string, fruitRecords []fruititem.FruitItem, sequence uint64, origin string) error {
+	if origin == "" {
+		slog.Error("Ignoring partial top without origin", "request_id", requestID)
+		return nil
+	}
+
+	if _, ok := join.partialConfirmations[requestID]; !ok {
+		join.partialConfirmations[requestID] = map[string]struct{}{}
+	}
+	if _, duplicated := join.partialConfirmations[requestID][origin]; duplicated {
+		return nil
+	}
+	join.partialConfirmations[requestID][origin] = struct{}{}
+
 	if _, ok := join.requestStates[requestID]; !ok {
 		join.requestStates[requestID] = map[string]fruititem.FruitItem{}
 	}
@@ -91,10 +104,7 @@ func (join *Join) handlePartialTop(requestID string, fruitRecords []fruititem.Fr
 		}
 	}
 
-	// TODO: reemplazar este contador por confirmaciones por id/nombre de
-	// Aggregation para evitar cerrar antes de tiempo ante mensajes duplicados.
-	join.partialCounts[requestID]++
-	if join.partialCounts[requestID] < join.aggregationAmount {
+	if len(join.partialConfirmations[requestID]) < join.aggregationAmount {
 		return nil
 	}
 
@@ -108,7 +118,7 @@ func (join *Join) handlePartialTop(requestID string, fruitRecords []fruititem.Fr
 	}
 
 	delete(join.requestStates, requestID)
-	delete(join.partialCounts, requestID)
+	delete(join.partialConfirmations, requestID)
 	return nil
 }
 

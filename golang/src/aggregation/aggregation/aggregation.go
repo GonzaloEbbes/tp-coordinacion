@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -23,12 +24,13 @@ type AggregationConfig struct {
 }
 
 type Aggregation struct {
-	outputQueue   middleware.Middleware
-	inputExchange middleware.Middleware
-	sumAmount     int
-	requestStates map[string]map[string]fruititem.FruitItem
-	eofCounts     map[string]int
-	topSize       int
+	id               int
+	outputQueue      middleware.Middleware
+	inputExchange    middleware.Middleware
+	sumAmount        int
+	requestStates    map[string]map[string]fruititem.FruitItem
+	eofConfirmations map[string]map[string]struct{}
+	topSize          int
 }
 
 func NewAggregation(config AggregationConfig) (*Aggregation, error) {
@@ -47,12 +49,13 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	}
 
 	return &Aggregation{
-		outputQueue:   outputQueue,
-		inputExchange: inputExchange,
-		sumAmount:     config.SumAmount,
-		requestStates: map[string]map[string]fruititem.FruitItem{},
-		eofCounts:     map[string]int{},
-		topSize:       config.TopSize,
+		id:               config.Id,
+		outputQueue:      outputQueue,
+		inputExchange:    inputExchange,
+		sumAmount:        config.SumAmount,
+		requestStates:    map[string]map[string]fruititem.FruitItem{},
+		eofConfirmations: map[string]map[string]struct{}{},
+		topSize:          config.TopSize,
 	}, nil
 }
 
@@ -72,7 +75,7 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 	}
 
 	if envelope.Type == inner.TypeEOF {
-		if err := aggregation.handleEndOfRecordsMessage(envelope.RequestID, envelope.Sequence); err != nil {
+		if err := aggregation.handleEndOfRecordsMessage(envelope.RequestID, envelope.Sequence, envelope.Origin); err != nil {
 			slog.Error("While handling end of record message", "err", err)
 		}
 		return
@@ -81,19 +84,27 @@ func (aggregation *Aggregation) handleMessage(msg middleware.Message, ack func()
 	aggregation.handleDataMessage(envelope.RequestID, envelope.Payload)
 }
 
-func (aggregation *Aggregation) handleEndOfRecordsMessage(requestID string, sequence uint64) error {
-	slog.Info("Received End Of Records message", "request_id", requestID, "sequence", sequence)
+func (aggregation *Aggregation) handleEndOfRecordsMessage(requestID string, sequence uint64, origin string) error {
+	slog.Info("Received End Of Records message", "request_id", requestID, "sequence", sequence, "origin", origin)
 
-	// TODO: reemplazar este contador por un set/lista de confirmaciones faltantes
-	// por id o nombre de Sum. Si llega dos veces un EOF del mismo origen, el
-	// contador actual puede cerrar el request antes de tiempo.
-	aggregation.eofCounts[requestID]++
-	if aggregation.eofCounts[requestID] < aggregation.sumAmount {
+	if origin == "" {
+		slog.Error("Ignoring EOF without origin", "request_id", requestID)
+		return nil
+	}
+
+	if _, ok := aggregation.eofConfirmations[requestID]; !ok {
+		aggregation.eofConfirmations[requestID] = map[string]struct{}{}
+	}
+	if _, duplicated := aggregation.eofConfirmations[requestID][origin]; duplicated {
+		return nil
+	}
+	aggregation.eofConfirmations[requestID][origin] = struct{}{}
+	if len(aggregation.eofConfirmations[requestID]) < aggregation.sumAmount {
 		return nil
 	}
 
 	fruitTopRecords := aggregation.buildFruitTop(requestID)
-	message, err := inner.SerializeMessage(inner.TypeData, fruitTopRecords, requestID, sequence)
+	message, err := inner.SerializeMessageFrom(inner.TypeData, fruitTopRecords, requestID, sequence, strconv.Itoa(aggregation.id))
 	if err != nil {
 		slog.Debug("While serializing top message", "err", err)
 		return err
@@ -113,7 +124,7 @@ func (aggregation *Aggregation) handleEndOfRecordsMessage(requestID string, sequ
 		return err
 	}
 	delete(aggregation.requestStates, requestID)
-	delete(aggregation.eofCounts, requestID)
+	delete(aggregation.eofConfirmations, requestID)
 	return nil
 }
 

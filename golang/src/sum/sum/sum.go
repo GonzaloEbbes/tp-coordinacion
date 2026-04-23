@@ -4,18 +4,13 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"os"
-	"sort"
-	"strings"
+	"strconv"
 	"sync"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
-
-// TODO: eliminar esto
-const totalsLogFile = "sum_totals.log"
 
 type SumConfig struct {
 	Id                int
@@ -29,6 +24,7 @@ type SumConfig struct {
 }
 
 type Sum struct {
+	id               int
 	inputQueue       middleware.Middleware
 	controlConsumer  middleware.Middleware
 	controlPublisher middleware.Middleware
@@ -91,6 +87,7 @@ func NewSum(config SumConfig) (*Sum, error) {
 	}
 
 	return &Sum{
+		id:               config.Id,
 		inputQueue:       inputQueue,
 		controlConsumer:  controlConsumer,
 		controlPublisher: controlPublisher,
@@ -135,9 +132,6 @@ func (sum *Sum) handleMessage(msg middleware.Message, ack func(), nack func()) {
 		slog.Error("While handling data message", "err", err)
 		return
 	}
-	if err := sum.logTotalsSnapshot("after data message"); err != nil {
-		slog.Error("While logging totals snapshot", "err", err)
-	}
 }
 
 func (sum *Sum) broadcastEOF(requestID string, sequence uint64) error {
@@ -172,7 +166,7 @@ func (sum *Sum) handleEndOfRecordMessage(requestID string, eofSequence uint64) e
 		}
 	}
 
-	message, err := inner.SerializeMessage(inner.TypeEOF, []fruititem.FruitItem{}, requestID, eofSequence)
+	message, err := inner.SerializeMessageFrom(inner.TypeEOF, []fruititem.FruitItem{}, requestID, eofSequence, strconv.Itoa(sum.id))
 	if err != nil {
 		slog.Debug("While serializing EOF message", "err", err)
 		return err
@@ -211,42 +205,4 @@ func (sum *Sum) handleDataMessage(requestID string, fruitRecords []fruititem.Fru
 	}
 	sum.stateMutex.Unlock()
 	return nil
-}
-
-// TODO: eliminar esto, es solo para probar que los containers de sum esten
-// realmente haciendo cosas
-func (sum *Sum) logTotalsSnapshot(stage string) error {
-	var builder strings.Builder
-	builder.WriteString(stage)
-	builder.WriteString("\n")
-
-	sum.stateMutex.Lock()
-	requestIDs := make([]string, 0, len(sum.requestStates))
-	for requestID := range sum.requestStates {
-		requestIDs = append(requestIDs, requestID)
-	}
-	sort.Strings(requestIDs)
-
-	for _, requestID := range requestIDs {
-		builder.WriteString(fmt.Sprintf("[%s]\n", requestID))
-		keys := make([]string, 0, len(sum.requestStates[requestID]))
-		for fruit := range sum.requestStates[requestID] {
-			keys = append(keys, fruit)
-		}
-		sort.Strings(keys)
-		for _, fruit := range keys {
-			builder.WriteString(fmt.Sprintf("%s,%d\n", fruit, sum.requestStates[requestID][fruit].Amount))
-		}
-	}
-	sum.stateMutex.Unlock()
-	builder.WriteString("\n")
-
-	file, err := os.OpenFile(totalsLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	_, err = file.WriteString(builder.String())
-	return err
 }
